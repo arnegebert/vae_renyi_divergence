@@ -87,6 +87,8 @@ class Gaussian_Stoc_Layer(Stoc_Layer):
         (Mu, Log_Sigma) = params
         logprob = -(0.5 * np.log(2 * np.pi) + Log_Sigma) \
                   - 0.5 * ((output - Mu) / tf.exp(Log_Sigma)) ** 2
+        # go from (N*K, z) to (N*K)
+        # this is q(z|x) for a single sample
         return tf.reduce_sum(logprob, 1)      
 
     def get_prob_type(self):

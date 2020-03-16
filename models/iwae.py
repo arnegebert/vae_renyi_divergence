@@ -12,9 +12,10 @@ def iwae(x, encoder, decoder, num_samples, batch_size, alpha = 0.0):
     Compute the loss function of VR lowerbound
     """
     #logpxz, logqzx, z_list = reconstruction_loss(x, encoder, decoder, num_samples)
-    logpxz = 0.0
-    logqzx = 0.0
+    logp_x_given_z = 0.0
+    logq_z_given_x = 0.0
     L = len(encoder.S_layers)
+    # (N*K, F)
     x_rep = tf.tile(x, [num_samples, 1]) 
     input = x_rep
 
@@ -22,35 +23,65 @@ def iwae(x, encoder, decoder, num_samples, batch_size, alpha = 0.0):
     samples = []
     for l in xrange(L):
         output, logq = encoder.S_layers[l].encode_and_log_prob(input)
-        logqzx = logqzx + logq
+        # summing over these since latents are all independent given their previous one
+        logq_z_given_x = logq_z_given_x + logq
         samples.append(output)
         input = output
-
+    # at this point logq_z_given_x is q(z|x)
+    # dimension of q(z|x) is (N*K)
     # do decoding
     samples = list(reversed(samples))
     samples.append(x_rep)
     for l in xrange(L):
         _, logp = decoder.S_layers[l].encode_and_log_prob(samples[l], eval_output = samples[l+1])
-        logpxz = logpxz + logp
+        logp_x_given_z = logp_x_given_z + logp
+    # same reasoning, logp_x_given_z is p(x|z) (N*K)
 
+    # get probability type of last encoder layer to compute p(z_l)
     logpz = log_prior(output, encoder.S_layers[l].get_prob_type())
-    logF = logpz + logpxz - logqzx
+
+    # (N*K)
+    logF = logpz + logp_x_given_z - logq_z_given_x
     
     # first compute lowerbound
     K = float(num_samples)
-    logF_matrix = tf.reshape(logF, [num_samples, batch_size]) * (1 - alpha) 
+    # (K, N), unnormalized importance weight but for alpha-divergence
+    logF_matrix = tf.reshape(logF, [num_samples, batch_size]) * (1 - alpha)
+    # (N), choose sample with highest weight
     logF_max = tf.reduce_max(logF_matrix, 0)
+    # normalize it? subtract max weight from each weight
     logF_matrix -= logF_max
+    # sum over all samples for each datapoint and make them positive
+    # (K, N) -> (N)
     logF_normalizer = tf.clip_by_value(tf.reduce_sum(tf.exp(logF_matrix), 0), 1e-9, np.inf)
+    # take the log you just removed again
+    # (N)
     logF_normalizer = tf.log(logF_normalizer)
     # note here we need to substract log K as we use reduce_sum above
     if np.abs(alpha - 1.0) > 10e-3:
+        # alpha > 0?
+        # for each data point, do normalized w * max w
+        # divide by K and take it power (1-alpha)
+        # then sum over all data points
+        # sum ((w_norm * w_max)/K)^(1-alpha)
+        # ==> (1-alpha) * sum log ((w_norm * w_max)/K) = (1-alpha) * sum (log w_norm + log w_max - log K)
+        # (N) -> (1)
         lowerbound = tf.reduce_mean(logF_normalizer + logF_max - tf.log(K)) / (1 - alpha)
     else:
+        # compute mean over all samples over all data points
+        # just sum over log p... for all data points in the mini batch
+        # this is analogue to doing a monte carlo approximation of the ELBO in the standard case
+        # youre just doing this here summing here, since this is pretty much vanilla IWAE
+        # BUT youre using an alpha-divergence as divergence instead
+        # (N*K) -> (1)
         lowerbound = tf.reduce_mean(logF)
     
     # now compute the importance weighted version of gradients
+    # (K, N) - (N) ... :/
+    # subtract normalized weights from all samples for each data point
+    # then reshape to K*N
     log_ws = tf.reshape(logF_matrix - logF_normalizer, shape=[-1])
+    # not sure what is happening below here
     ws = tf.stop_gradient(tf.exp(log_ws), name = 'importance_weights_no_grad')
     params = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES)
     gradients = tf.gradients(-logF * ws, params)
