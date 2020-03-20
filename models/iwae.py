@@ -54,18 +54,16 @@ def iwae(x, encoder, decoder, num_samples, batch_size, alpha = 0.0):
     # sum over all samples for each datapoint and make them positive
     # (K, N) -> (N)
     logF_normalizer = tf.clip_by_value(tf.reduce_sum(tf.exp(logF_matrix), 0), 1e-9, np.inf)
-    # take the log you just removed again
     # (N)
     logF_normalizer = tf.log(logF_normalizer)
     # note here we need to substract log K as we use reduce_sum above
     if np.abs(alpha - 1.0) > 10e-3:
-        # alpha > 0?
-        # for each data point, do normalized w * max w
-        # divide by K and take it power (1-alpha)
-        # then sum over all data points
-        # sum ((w_norm * w_max)/K)^(1-alpha)
-        # ==> (1-alpha) * sum log ((w_norm * w_max)/K) = (1-alpha) * sum (log w_norm + log w_max - log K)
+        # alpha > 1?
         # (N) -> (1)
+
+        # what theyre definitely computing here is
+        # 1/N 1/(1-alpha) sum_minibatch * log 1/K sum_samples w_i_alpha
+        # MC approx equation (8), IWAE paper
         lowerbound = tf.reduce_mean(logF_normalizer + logF_max - tf.log(K)) / (1 - alpha)
     else:
         # compute mean over all samples over all data points
@@ -77,16 +75,16 @@ def iwae(x, encoder, decoder, num_samples, batch_size, alpha = 0.0):
         lowerbound = tf.reduce_mean(logF)
     
     # now compute the importance weighted version of gradients
-    # (K, N) - (N) ... :/
     # subtract normalized weights from all samples for each data point
     # then reshape to K*N
     log_ws = tf.reshape(logF_matrix - logF_normalizer, shape=[-1])
-    # not sure what is happening below here
     ws = tf.stop_gradient(tf.exp(log_ws), name = 'importance_weights_no_grad')
     params = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES)
+    # what theyre definitely computing here is
+    # sum_samples (w_norm_alpha_k * log w_i)
     gradients = tf.gradients(-logF * ws, params)
     grad = zip(gradients, params)
-   
+
     return lowerbound, grad
     
 def make_functions_vae(models, input_size, num_samples, batch_size, alpha = 0.0): 
